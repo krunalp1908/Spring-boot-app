@@ -1,0 +1,132 @@
+@Library('Shared') _
+pipeline {
+    agent any
+
+    tools {
+        maven "maven3" // Jenkins tool named "maven3"
+    }
+
+    environment {
+        SCANNER_HOME = tool 'Sonar' // Jenkins tool named "Sonar"
+    }
+
+    parameters {
+        string(name: 'DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
+    }
+
+    stages {
+        stage("Validate Parameters") {
+            steps {
+                script {
+                    if (params.DOCKER_TAG == '') {
+                        error("DOCKER_TAG must be provided.")
+                    }
+                }
+            }
+        }
+
+        stage("Workspace cleanup") {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Git Checkout') {
+            steps {
+                git url: 'https://github.com/krunalp1908/Spring-boot-app.git', branch: 'main'
+            }
+        }
+
+        stage("Build and Test") {
+            steps {
+                dir('spring-boot-app') {
+                    sh 'mvn clean package'
+                }
+            }
+        }
+
+        stage("Static Code Analysis") {
+            steps {
+                dir('spring-boot-app') {
+                    withSonarQubeEnv('Sonar') {
+                        sh '''
+                            mvn sonar:sonar \
+                            -Dsonar.projectKey=springboot-app \
+                            -Dsonar.projectName=springboot-app
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Docker: Build Image") {
+            steps {
+                dir('spring-boot-app') {
+                    script {
+                        docker_build("ultimate-cicd", "${params.DOCKER_TAG}", "krunalp19")
+                    }
+                }
+            }
+        }
+
+        stage("Docker: Push to Docker Hub") {
+            steps {
+                script {
+                    docker_push("ultimate-cicd", "${params.DOCKER_TAG}", "krunalp19")
+                }
+            }
+        }
+
+        stage("Git: Code Checkout Again") {
+            steps {
+                script {
+                    code_checkout("https://github.com/krunalp1908/Spring-boot-app.git", "main")
+                }
+            }
+        }
+
+        stage('Verify: Docker Image Tags') {
+            steps {
+                echo "DOCKER_TAG: ${params.DOCKER_TAG}"
+            }
+        }
+
+        stage("Update: Kubernetes Manifests") {
+            steps {
+                dir('spring-boot-app-manifests') {
+                    sh """
+                        sed -i -e 's|ultimate-cicd:.*|ultimate-cicd:${params.DOCKER_TAG}|g' deployment.yml
+                    """
+                }
+            }
+        }
+
+        stage("Git: Push Updated Manifests") {
+            steps {
+                withCredentials([gitUsernamePassword(credentialsId: 'Github-cred', gitToolName: 'Default')]) {
+                    dir('spring-boot-app-manifests') {
+                        sh '''
+                            echo "Checking repository status: "
+                            git status
+
+                            echo "Adding changes to git: "
+                            git add .
+
+                            echo "Committing changes: "
+                            git commit -m "Updated environment variables"
+
+                            echo "Pushing changes to GitHub: "
+                            git push https://github.com/krunalp1908/Spring-boot-app.git main
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Final Workspace Cleanup") {
+            steps {
+                cleanWs()
+            }
+        }
+    }
+}
